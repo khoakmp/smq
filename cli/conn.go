@@ -62,7 +62,7 @@ func NewConn(addr string, delegate ConnDelegate, flushInterval time.Duration) *C
 		w:                nil,
 		msgHandlingCount: 0,
 		writeMutex:       sync.Mutex{},
-		msgRespChan:      make(chan *Message),
+		msgRespChan:      make(chan *Message, 400),
 		closeFlag:        0,
 		exitChan:         make(chan struct{}),
 		readExitFlag:     0,
@@ -262,6 +262,20 @@ func (c *Conn) writeLoop() {
 	if c.flushInterval != 0 {
 		flushChan = time.NewTicker(c.flushInterval).C
 	}
+	// when design, should do
+	handleMsgResp := func(msg *Message) error {
+		atomic.AddInt32(&c.msgHandlingCount, -1)
+		bspool.Put(msg.Payload)
+		var cmd *Command
+		// may check another condition
+		if msg.State == StateMsgSucceed {
+			cmd = CmdFinish(msg.ID)
+		} else {
+			cmd = CmdRequeue(msg.ID)
+		}
+		PutMessageToPool(msg)
+		return c.BufferCommand(cmd)
+	}
 
 	for {
 		select {
@@ -274,10 +288,38 @@ func (c *Conn) writeLoop() {
 			goto exit
 
 		case msg := <-c.msgRespChan:
-			atomic.AddInt32(&c.msgHandlingCount, -1)
+			/* atomic.AddInt32(&c.msgHandlingCount, -1)
 			bspool.Put(msg.Payload)
+			// at this point call buffer message dung
+			err := handleMsgResp(msg)
+			PutMessageToPool(msg) */
 
-			if msg.State == StateMsgSucceed {
+			err := handleMsgResp(msg)
+			if err != nil {
+				atomic.StoreInt32(&c.closeFlag, 1)
+				goto exit
+			}
+
+		recv_loop:
+			for {
+				select {
+				case msg := <-c.msgRespChan:
+					if err := handleMsgResp(msg); err != nil {
+						atomic.StoreInt32(&c.closeFlag, 1)
+						goto exit
+					}
+				default:
+					c.Flush()
+					break recv_loop
+				}
+			}
+
+			if atomic.LoadInt32(&c.readExitFlag) == 1 && atomic.LoadInt32(&c.msgHandlingCount) == 0 {
+				// when go here it may close gracefully, the connection still be ok, but caller call explicitly
+				// to close and there are no messsage being processed
+				goto exit
+			}
+			/* if msg.State == StateMsgSucceed {
 				err := c.BufferCommand(CmdFinish(msg.ID))
 				PutMessageToPool(msg)
 
@@ -285,23 +327,20 @@ func (c *Conn) writeLoop() {
 					atomic.StoreInt32(&c.closeFlag, 1)
 					goto exit
 				}
-				continue
-			}
-			// TODO: check retry reach max attemp, if so, abort message (not send requeue)
-			err := c.WriteCommand(CmdRequeue(msg.ID))
-			PutMessageToPool(msg)
 
-			if err != nil {
-				atomic.StoreInt32(&c.closeFlag, 1)
-				goto exit
-			}
+			} else {
+				// TODO: check retry reach max attemp, if so, abort message (not send requeue)
+				err := c.WriteCommand(CmdRequeue(msg.ID))
+				PutMessageToPool(msg)
+
+				if err != nil {
+					atomic.StoreInt32(&c.closeFlag, 1)
+					goto exit
+				}
+			} */
 
 			// only check everytime recv one msg response
-			if atomic.LoadInt32(&c.readExitFlag) == 1 && atomic.LoadInt32(&c.msgHandlingCount) == 0 {
-				// when go here it may close gracefully, the connection still be ok, but caller call explicitly
-				// to close and there are no messsage being processed
-				goto exit
-			}
+
 		}
 	}
 

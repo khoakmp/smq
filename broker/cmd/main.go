@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bufio"
 	"encoding/binary"
 	"fmt"
+	"io"
 	"math/bits"
 	"net"
 	"os"
@@ -21,34 +23,54 @@ func genMessage(id core.MessageID, priority int, delay time.Duration) *core.Mess
 		Payload:    []byte("payload"),
 	}
 }
-func testTCP() {
-	cmd := os.Args[1]
-	switch cmd {
-	case "s":
-		l, _ := net.Listen("tcp", ":8080")
-		conn, err := l.Accept()
+func runTCPClient() {
+	ipAddr := os.Args[1]
+	conn, err := net.Dial("tcp", ipAddr+":8080")
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	defer conn.Close()
+	input := bufio.NewReader(os.Stdin)
+	var buf [2048]byte
+
+	for {
+		line, _, err := input.ReadLine()
 		if err != nil {
 			fmt.Println(err)
 			return
 		}
-		var buf [5]byte
-		_, err = conn.Read(buf[:])
-		fmt.Println(err)
+		if len(line) == 0 {
+			ts := time.Now().UnixNano()
+			binary.BigEndian.PutUint64(buf[:8], uint64(ts))
+			conn.Write(buf[:])
+		}
+	}
+}
+func runTCPServer() {
 
-	case "c":
-		go func() {
-			_, err := net.Dial("tcp", ":8080")
-			if err != nil {
-				fmt.Println(err)
-				return
-			}
-		}()
-		var buf [5]byte
-		os.Stdin.Read(buf[:])
+	l, _ := net.Listen("tcp", ":8080")
+	conn, err := l.Accept()
+	if err != nil {
+		fmt.Println(err)
+		return
 	}
 
+	var buf [2048]byte
+	for {
+		_, err := io.ReadFull(conn, buf[:])
+		if err != nil {
+			fmt.Println("Failed to read data:", err)
+			return
+		}
+		ts := int64(binary.BigEndian.Uint64(buf[:8]))
+		delta := time.Duration(time.Now().UnixNano() - ts)
+		fmt.Println("dur:", delta)
+	}
 }
+
 func main() {
+	runTCPServer()
 	/* ch := make(chan int, 10)
 	n := 10000
 

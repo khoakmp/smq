@@ -68,7 +68,7 @@ func NewConsumer(topicName, groupName string, handler MessageHandler, config *Co
 	c := &Consumer{
 		topicName:            topicName,
 		groupName:            groupName,
-		incommingMessageChan: make(chan *Message, 10),
+		incommingMessageChan: make(chan *Message, 400),
 		conns:                make(map[string]*Conn),
 		pendingConns:         make(map[string]*Conn),
 		handler:              handler,
@@ -248,7 +248,7 @@ func (cs *Consumer) ConnectBroker(addr string) error {
 		return errors.New("consumer stopping")
 	}
 
-	conn := NewConn(addr, &ConsumerConnDelegate{c: cs}, time.Millisecond*200)
+	conn := NewConn(addr, &ConsumerConnDelegate{c: cs}, 0)
 	// use flush ticker to flush buffered message responses
 	// after calling newConn, it call connect immediately
 	// it check that whether the connection to this address is already created by another goroutine, if so

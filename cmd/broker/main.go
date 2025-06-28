@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"runtime"
-	"runtime/pprof"
 	"strconv"
 	"time"
 
@@ -30,7 +29,7 @@ func RunBroker() {
 	tcpAddr := os.Args[1]
 	id := os.Args[2]
 
-	f, err := os.Create(fmt.Sprintf("pprof/cpu-%s", id))
+	/* f, err := os.Create(fmt.Sprintf("pprof/cpu-%s", id))
 	if err != nil {
 		fmt.Println(err)
 		return
@@ -44,7 +43,7 @@ func RunBroker() {
 	}
 
 	defer pprof.StopCPUProfile()
-	// with 25bytes/msg => it use
+	// with 25bytes/msg => it use */
 	msgPattern := "message pattern here sssssssssssssssssssssssssssss"
 
 	/* file, err := os.OpenFile("/dev/pts/4", os.O_WRONLY, 0600)

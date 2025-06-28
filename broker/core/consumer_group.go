@@ -284,8 +284,9 @@ func (c *ConsumerGroup) put(msg *Message) error {
 		buffer := bytes.NewBuffer(nil)
 		msg.WriteTo(buffer)
 		buf := buffer.Bytes()
+
 		if err := c.peristentQueue.Put(buf); err != nil {
-			log.Printf("[ConsumerGroup %s] Failed to persist message, caused by %s\n", c.Name, err.Error())
+			//log.Printf("[ConsumerGroup %s] Failed to persist message, caused by %s\n", c.Name, err.Error())
 			return err
 		}
 	}

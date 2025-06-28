@@ -49,7 +49,7 @@ func (c *Consumer) MessageResponse() {
 func (c *Consumer) IsReady() bool {
 	if atomic.LoadInt32(&c.InflightMsgCount) >= atomic.LoadInt32(&c.ReadyCount) || c.group.Pausing() {
 		// TODO: replace ClientID by TraceID sent by client
-		fmt.Printf("Client %s is not ready to recv msg\n", c.TraceID)
+		//fmt.Printf("Client %s is not ready to recv msg\n", c.TraceID)
 		return false
 	}
 	return true
