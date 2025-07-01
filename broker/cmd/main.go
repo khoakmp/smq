@@ -5,13 +5,14 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
-	"math/bits"
 	"net"
 	"os"
+	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/khoakmp/smq/broker/core"
+	"github.com/khoakmp/smq/broker/fqueue"
 )
 
 func genMessage(id core.MessageID, priority int, delay time.Duration) *core.Message {
@@ -23,6 +24,7 @@ func genMessage(id core.MessageID, priority int, delay time.Duration) *core.Mess
 		Payload:    []byte("payload"),
 	}
 }
+
 func runTCPClient() {
 	ipAddr := os.Args[1]
 	conn, err := net.Dial("tcp", ipAddr+":8080")
@@ -30,6 +32,7 @@ func runTCPClient() {
 		fmt.Println(err)
 		return
 	}
+
 	defer conn.Close()
 	input := bufio.NewReader(os.Stdin)
 	var buf [2048]byte
@@ -43,10 +46,16 @@ func runTCPClient() {
 		if len(line) == 0 {
 			ts := time.Now().UnixNano()
 			binary.BigEndian.PutUint64(buf[:8], uint64(ts))
-			conn.Write(buf[:])
+			_, err := conn.Write(buf[:])
+
+			if err != nil {
+				fmt.Println(err)
+				return
+			}
 		}
 	}
 }
+
 func runTCPServer() {
 
 	l, _ := net.Listen("tcp", ":8080")
@@ -70,7 +79,7 @@ func runTCPServer() {
 }
 
 func main() {
-	runTCPServer()
+
 	/* ch := make(chan int, 10)
 	n := 10000
 
@@ -104,7 +113,50 @@ func main() {
 	wg.Wait()
 	fmt.Println(time.Since(st)) */
 	//testTCP()
-	fmt.Println(bits.Len(21))
+
+	q := fqueue.NewFileQueue("data", "t1#tmp", fqueue.FileQueueConfig{
+		MaxBytesPerFile: 2048,
+		SyncEveryStep:   5,
+	})
+	var wg sync.WaitGroup
+
+	pushFn := func(n int) {
+		defer wg.Done()
+		var msg []byte = []byte("hello")
+		for range n {
+			if err := q.Put(msg); err != nil {
+				fmt.Println(err)
+			}
+		}
+	}
+
+	readFn := func(n int) {
+		defer wg.Done()
+
+		for range n {
+			msg := <-q.ReadChan()
+
+			if msg == nil {
+				panic("msg is nil")
+			}
+		}
+	}
+
+	wg.Add(2)
+	n := 3000
+
+	go pushFn(n)
+	go readFn(n)
+
+	start := time.Now()
+	wg.Wait()
+
+	fmt.Println("total time:", time.Since(start))
+	err := q.Delete()
+	if err != nil {
+		fmt.Println("failed to delete queue:", err)
+	}
+
 }
 
 func cal() func() {

@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"sync"
@@ -52,8 +53,37 @@ type Conn struct {
 	lastRecvMsgTime  int64
 	flushInterval    time.Duration
 	flushed          int32
+
+	MsgRespBatchSz []int // for debugging
 }
 
+func (c *Conn) MsgRespBatchSzStats() string {
+	s, bmax, bmin := 0, 0, 10000
+	buffer := bytes.NewBuffer(nil)
+
+	for i := 0; i < len(c.MsgRespBatchSz); i++ {
+		if c.MsgRespBatchSz[i] > bmax {
+			bmax = c.MsgRespBatchSz[i]
+		}
+		if c.MsgRespBatchSz[i] < bmin {
+			bmin = c.MsgRespBatchSz[i]
+		}
+		s += c.MsgRespBatchSz[i]
+	}
+	fmt.Fprintf(buffer, "Num batch: %d\n", len(c.MsgRespBatchSz))
+
+	if len(c.MsgRespBatchSz) > 0 {
+		fmt.Fprintf(buffer, "Max batch size:%d\n", bmax)
+		fmt.Fprintf(buffer, "Min batch size:%d\n", bmin)
+		fmt.Fprintf(buffer, "Ave batch size: %d\n", s/len(c.MsgRespBatchSz))
+	}
+	for i := 0; i < len(c.MsgRespBatchSz); i++ {
+		fmt.Fprintf(buffer, "%d,", c.MsgRespBatchSz[i])
+	}
+	fmt.Fprintln(buffer)
+
+	return buffer.String()
+}
 func NewConn(addr string, delegate ConnDelegate, flushInterval time.Duration) *Conn {
 	return &Conn{
 		netConn:          nil,
@@ -62,7 +92,7 @@ func NewConn(addr string, delegate ConnDelegate, flushInterval time.Duration) *C
 		w:                nil,
 		msgHandlingCount: 0,
 		writeMutex:       sync.Mutex{},
-		msgRespChan:      make(chan *Message, 400),
+		msgRespChan:      make(chan *Message),
 		closeFlag:        0,
 		exitChan:         make(chan struct{}),
 		readExitFlag:     0,
@@ -201,7 +231,6 @@ func (c *Conn) readLoop() {
 
 		switch frameType {
 		case api.FrameMessage:
-			//fmt.Println("recv one message at readloop")
 			// TODO: handle error
 			atomic.AddInt32(&c.msgHandlingCount, 1)
 			atomic.StoreInt64(&c.lastRecvMsgTime, time.Now().UnixNano())
@@ -246,14 +275,6 @@ func decodeMessage(buf []byte) *Message {
 	msg.Payload = payload
 	msg.Timestamp = int64(cmsg.Timestamp)
 	msg.Attemps = cmsg.Attemps
-
-	/* msg := &Message{
-		ID:        cmsg.ID,
-		Payload:   payload,
-		Timestamp: int64(cmsg.Timestamp),
-		Attemps:   cmsg.Attemps,
-	} */
-
 	return msg
 }
 
@@ -262,12 +283,12 @@ func (c *Conn) writeLoop() {
 	if c.flushInterval != 0 {
 		flushChan = time.NewTicker(c.flushInterval).C
 	}
-	// when design, should do
+
 	handleMsgResp := func(msg *Message) error {
 		atomic.AddInt32(&c.msgHandlingCount, -1)
 		bspool.Put(msg.Payload)
 		var cmd *Command
-		// may check another condition
+		// TODO: may check another condition
 		if msg.State == StateMsgSucceed {
 			cmd = CmdFinish(msg.ID)
 		} else {
@@ -279,7 +300,6 @@ func (c *Conn) writeLoop() {
 
 	for {
 		select {
-		// TODO: add flush ticker
 		case <-flushChan:
 			c.Flush()
 
@@ -288,59 +308,45 @@ func (c *Conn) writeLoop() {
 			goto exit
 
 		case msg := <-c.msgRespChan:
-			/* atomic.AddInt32(&c.msgHandlingCount, -1)
-			bspool.Put(msg.Payload)
-			// at this point call buffer message dung
-			err := handleMsgResp(msg)
-			PutMessageToPool(msg) */
 
+			atomic.AddInt32(&c.msgHandlingCount, -1)
+			bspool.Put(msg.Payload)
 			err := handleMsgResp(msg)
 			if err != nil {
 				atomic.StoreInt32(&c.closeFlag, 1)
 				goto exit
 			}
 
-		recv_loop:
-			for {
-				select {
-				case msg := <-c.msgRespChan:
-					if err := handleMsgResp(msg); err != nil {
+			/*
+				*** This loop to send batch, an alternative for send periodically
+					err := handleMsgResp(msg)
+					if err != nil {
 						atomic.StoreInt32(&c.closeFlag, 1)
 						goto exit
 					}
-				default:
-					c.Flush()
-					break recv_loop
-				}
-			}
+					var cnt = 1
+
+				recv_loop:
+					for {
+						select {
+						case msg := <-c.msgRespChan:
+							if err := handleMsgResp(msg); err != nil {
+								atomic.StoreInt32(&c.closeFlag, 1)
+								goto exit
+							}
+							cnt++
+						default:
+							c.Flush()
+							c.MsgRespBatchSz = append(c.MsgRespBatchSz, cnt)
+							break recv_loop
+						}
+					} */
 
 			if atomic.LoadInt32(&c.readExitFlag) == 1 && atomic.LoadInt32(&c.msgHandlingCount) == 0 {
 				// when go here it may close gracefully, the connection still be ok, but caller call explicitly
 				// to close and there are no messsage being processed
 				goto exit
 			}
-			/* if msg.State == StateMsgSucceed {
-				err := c.BufferCommand(CmdFinish(msg.ID))
-				PutMessageToPool(msg)
-
-				if err != nil {
-					atomic.StoreInt32(&c.closeFlag, 1)
-					goto exit
-				}
-
-			} else {
-				// TODO: check retry reach max attemp, if so, abort message (not send requeue)
-				err := c.WriteCommand(CmdRequeue(msg.ID))
-				PutMessageToPool(msg)
-
-				if err != nil {
-					atomic.StoreInt32(&c.closeFlag, 1)
-					goto exit
-				}
-			} */
-
-			// only check everytime recv one msg response
-
 		}
 	}
 

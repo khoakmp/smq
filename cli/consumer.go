@@ -10,6 +10,7 @@ import (
 	"math/rand"
 	"net"
 	"net/http"
+	"os"
 	"slices"
 	"strconv"
 	"sync"
@@ -68,7 +69,7 @@ func NewConsumer(topicName, groupName string, handler MessageHandler, config *Co
 	c := &Consumer{
 		topicName:            topicName,
 		groupName:            groupName,
-		incommingMessageChan: make(chan *Message, 400),
+		incommingMessageChan: make(chan *Message),
 		conns:                make(map[string]*Conn),
 		pendingConns:         make(map[string]*Conn),
 		handler:              handler,
@@ -88,7 +89,7 @@ func NewConsumer(topicName, groupName string, handler MessageHandler, config *Co
 		pollMonitorChan:      make(chan struct{}, 1),
 		connsClosedChan:      make(chan struct{}),
 		closeAllConnsFlag:    0,
-		MaxAttemp:            1,
+		MaxAttemp:            3, // TODO: add to consumerConfig
 	}
 
 	c.cbreaker = NewCircuitBreaker(c.updateBackoff, CircuitBreakerConfig{
@@ -162,11 +163,11 @@ type QueryMonitorResp struct {
 
 // this function is called in only one goroutine
 func (cs *Consumer) queryMonitor() {
-	retries := 0
-	for retries < 3 {
+	attemps := 0
+	for attemps < 4 {
+		attemps++
 		index := cs.monitorIndex
 		var url string
-
 		cs.rmtx.RLock()
 		n := len(cs.monitorHttpUrls)
 		if n == 0 {
@@ -182,23 +183,27 @@ func (cs *Consumer) queryMonitor() {
 
 		resp, err := cs.monitorHttpClient.Get(url)
 		if err != nil {
-			retries++
 			continue
 		}
 		var queryResult QueryMonitorResp
 		respBody, err := io.ReadAll(resp.Body)
 		resp.Body.Close()
+
 		if err != nil {
-			retries++
 			continue
 		}
-
+		log.Printf("[Consumer %s] Query monitor %s successully\n", cs.TraceID, url)
 		json.Unmarshal(respBody, &queryResult)
+
 		for _, broker := range queryResult.BrokerNetInfors {
 			addr := net.JoinHostPort(broker.Hostname, strconv.Itoa(int(broker.BroadcastTCPPort)))
 			err := cs.ConnectBroker(addr)
 			if err != nil {
-				//TODO: log + handle error
+				if !errors.Is(err, ErrConnAlreadyExisted) {
+					log.Printf("[Consumer %s] Failed to connect broker at %s, err: %s\n", cs.TraceID, addr, err.Error())
+				}
+			} else {
+				log.Printf("[Consumer %s] Connect Broker %s successfully\n", cs.TraceID, addr)
 			}
 		}
 		return
@@ -225,16 +230,15 @@ func (cs *Consumer) ConnectMonitor(addr string) error {
 
 	// only initiate client on the first call to connect monitor
 	if cs.monitorHttpClient == nil {
-		cs.monitorHttpClient = &http.Client{
-			Transport: &http.Transport{}, // TODO: set up fields
-			Timeout:   time.Second * 60,  // should be replaced by const
-		}
+		cs.monitorHttpClient = http.DefaultClient
+		// TODO: setup custom http client
 	}
 
 	cs.rmtx.Unlock()
 
 	if n == 1 {
 		cs.wg.Add(1)
+		log.Printf("[Consumer %s] Start Poll Monitor Loop\n", cs.TraceID)
 		go cs.pollMonitorLoop()
 		cs.triggerPollMonitor()
 	}
@@ -248,7 +252,7 @@ func (cs *Consumer) ConnectBroker(addr string) error {
 		return errors.New("consumer stopping")
 	}
 
-	conn := NewConn(addr, &ConsumerConnDelegate{c: cs}, 0)
+	conn := NewConn(addr, &ConsumerConnDelegate{c: cs}, 100*time.Millisecond)
 	// use flush ticker to flush buffered message responses
 	// after calling newConn, it call connect immediately
 	// it check that whether the connection to this address is already created by another goroutine, if so
@@ -272,8 +276,7 @@ func (cs *Consumer) ConnectBroker(addr string) error {
 		cs.rmtx.Unlock()
 		conn.TriggerClose()
 	}
-	// vi cai dong nay with 8192 ?
-	//
+
 	err := conn.Connect(2048, 4096, c2b.PayloadClientSpec{
 		RecvWindow:           uint32(cs.maxInflight),
 		PushMessagesInterval: uint64(time.Millisecond) * 100,
@@ -379,7 +382,6 @@ func (cs *Consumer) calcReadyLoop() {
 
 			// when cs.maxInflight < len(conns) , count is 0
 			// so must redistribute when redistribute ticker tick
-			// take time to process that one dung nen la can lam gi de ma no ok now dung?
 
 		case <-redistributeTicker.C:
 			candidates := make([]*Conn, 0)
@@ -496,6 +498,7 @@ func (cs *Consumer) HandleLoop() {
 		msg.Attemps++
 
 		if err != nil && msg.Attemps < cs.MaxAttemp {
+			fmt.Println("go here")
 			msg.Requeue()
 			continue
 		}
@@ -509,6 +512,23 @@ exit:
 }
 func (cs *Consumer) StopHandlers() {
 	close(cs.incommingMessageChan)
+}
+
+// for debugging, remove later
+func (cs *Consumer) PrintRespBatchSzStats() {
+	f, err := os.OpenFile("batch-size-stats", os.O_WRONLY|os.O_CREATE, 0600)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	defer f.Close()
+
+	cs.rmtx.RLock()
+	for _, conn := range cs.conns {
+		fmt.Fprintf(f, "Conn%s:\n%s", conn.addr, conn.MsgRespBatchSzStats())
+		//fmt.Printf("Conn %s:\n%s", conn.addr, conn.MsgRespBatchSzStats())
+	}
+	cs.rmtx.RUnlock()
 }
 
 type ConsumerConnDelegate struct {

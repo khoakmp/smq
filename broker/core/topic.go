@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/khoakmp/smq/broker/fqueue"
 )
 
 type Topic struct {
@@ -33,6 +34,7 @@ type Topic struct {
 	exitChan           chan struct{}
 	doneChan           chan struct{}
 	Measurer           *Measurer // for testing
+
 }
 
 func (t *Topic) lock()    { t.mutex.Lock() }
@@ -59,12 +61,15 @@ func NewTopic(name string, deleteCb func(topicName string) error, notify func(v 
 		Measurer:           NewMeasurer(), // used for testing
 	}
 
-	if topic.temporary {
-		topic.persistentQueue = &MockPersistentQueue{}
+	if !topic.temporary && opts.EnableFileQueue {
+		topic.persistentQueue = fqueue.NewFileQueue(opts.FileQueueDir, topic.Name, fqueue.FileQueueConfig{
+			MaxBytesPerFile: 65536,
+			SyncEveryStep:   5,
+		})
 	} else {
 		topic.persistentQueue = &MockPersistentQueue{}
-		// TODO: replace mockPeristentQueue by Diskqueue
 	}
+
 	notify(topic, !topic.temporary)
 	go topic.forwardMessages()
 	return topic
@@ -186,19 +191,71 @@ func (t *Topic) DeleteGroup(csgName string) error {
 	return nil
 }
 
+func (t *Topic) PutMessages(msgs []*Message) error {
+	if t.Exiting() {
+		return ErrExiting
+	}
+
+	t.Measurer.TryRecordFirstRecvMsg()
+
+	if t.temporary || opts.EnableFileQueue {
+		for _, msg := range msgs {
+			select {
+			case t.messageChan <- msg:
+			default:
+				t.Measurer.IncrWritePQueueTopic()
+				if err := persistMessage(t.persistentQueue, msg); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
+
+	for _, msg := range msgs {
+		t.messageChan <- msg
+	}
+
+	return nil
+}
 func (t *Topic) PutMessage(msg *Message) error {
 	if t.Exiting() {
 		return ErrExiting
 	}
-	select {
-	case t.messageChan <- msg:
-		return nil
-	default:
-		t.Measurer.IncrWritePQueueTopic()
-		return persistMessage(t.persistentQueue, msg)
-	}
+	t.Measurer.TryRecordFirstRecvMsg()
+	/*
+		if t.temporary || opts.EnableFileQueue {
+			select {
+			case t.messageChan <- msg:
+				return nil
+			default:
+				t.Measurer.IncrWritePQueueTopic()
+				return persistMessage(t.persistentQueue, msg)
+			}
+		}
+
+		// not enable file queue, so block the caller
+		t.messageChan <- msg
+		return nil */
+	return t.put(msg)
 }
 
+func (t *Topic) put(msg *Message) error {
+
+	if t.temporary || opts.EnableFileQueue {
+		select {
+		case t.messageChan <- msg:
+			return nil
+		default:
+			t.Measurer.IncrWritePQueueTopic()
+			return persistMessage(t.persistentQueue, msg)
+		}
+	}
+
+	// not enable file queue, so block the caller
+	t.messageChan <- msg
+	return nil
+}
 func (t *Topic) forwardMessages() {
 	defer close(t.doneChan)
 	for {
@@ -266,11 +323,11 @@ START:
 		}
 
 		if msg.Timestamp > int(time.Now().UnixNano()) {
-			groups[0].AddDelayMessage(msg)
+			groups[0].PutDelayMessage(msg)
 			for i := 1; i < len(groups); i++ {
 				msg := msg.Clone()
 
-				groups[i].AddDelayMessage(msg)
+				groups[i].PutDelayMessage(msg)
 			}
 			continue
 		}
@@ -324,7 +381,7 @@ func (t *Topic) shutdown(deleted bool) error {
 	t.notify(t, !t.temporary)
 	// notify before delete or persist messages
 	if deleted {
-		// TODO: empty all messages in messageChan, should call Put message to MessagePool to reuse
+		// TODO: empty all messages in messageChan, should call PutToMessagePool to reuse
 
 		return t.persistentQueue.Delete()
 	}

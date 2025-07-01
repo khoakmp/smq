@@ -53,7 +53,6 @@ func (p *BrokerPeer) writeLoop(m *MonitorV2) {
 			goto exit
 		case resp := <-p.cmdResponseChan:
 			var frameType byte = api.FrameResponse
-
 			var payload []byte = resp.resp
 			if resp.err != nil {
 				frameType = api.FrameError

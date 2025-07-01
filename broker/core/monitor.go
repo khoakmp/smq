@@ -243,8 +243,9 @@ func (b *BrokerBase) notifyLoop() {
 			}
 
 			for _, c := range peers {
-				err := c.Do(cmd)
-				log.Println(err)
+				if err := c.Do(cmd); err != nil {
+					log.Println("Failed to call monitor peer", err)
+				}
 			}
 
 		case <-b.updateMonitorTCPAddrsChan:

@@ -63,6 +63,7 @@ type BrokerBase struct {
 	clusterQuerier            ClusterQuerier
 	persistChan               chan struct{}
 	Measurer                  *Measurer
+	loading                   bool
 }
 
 type Groups struct {
@@ -103,21 +104,10 @@ func NewBrokerBase(ID string, monitorTCPAddrs, monitorHttpAddrs []string) *Broke
 	state.monitorTCPAddrs.Store(monitorTCPAddrs)
 
 	state.ID = ID
-
 	go state.notifyLoop()
 	go state.scanQueueLoop()
 
-	return state
-}
-
-// should run with
-func NewBrokerBase2(monitorTCPAddrs, monitorHttpAddrs []string) *BrokerBase {
-
-	state := newBrokerBase()
-	state.clusterQuerier = NewClusterQuerierV1(monitorHttpAddrs)
-	state.monitorTCPAddrs.Store(monitorTCPAddrs)
-	// TODO: add wg later
-	go state.notifyLoop()
+	state.InitFromMetadata()
 
 	return state
 }
@@ -131,10 +121,11 @@ func (b *BrokerBase) SetMonitorTCPAddrs(addrs []string) {
 }
 
 func (b *BrokerBase) Notify(v any, persisted bool) {
-	// TODO: separate persist to another specified goroutine
-	if persisted {
+	// TODO: separate persist to another dedicated goroutine
+	if persisted && !b.loading {
 		b.PersistMetadata()
 	}
+
 	// When broker is exiting, it may not handle for notifyChan
 	select {
 	case <-b.exitChan:
@@ -144,9 +135,11 @@ func (b *BrokerBase) Notify(v any, persisted bool) {
 
 // only call at initial time
 func (b *BrokerBase) InitFromMetadata() {
+	b.loading = true
 	var metadata StateMetadata
 
 	metaFileName := getMetadataFileName(b.ID)
+
 	buf, err := os.ReadFile(metaFileName)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -168,21 +161,15 @@ func (b *BrokerBase) InitFromMetadata() {
 
 	for _, t := range metadata.Topics {
 		topic := NewTopic(t.TopicName, b.DeleteTopic, b.Notify)
-		//s.Notify(topic, !topic.temporary)
 		log.Printf("Topic %s is created\n", t.TopicName)
-		//topic.SetMeasurer(b.Measurer)
 
 		b.topics[t.TopicName] = topic
 		for _, groupName := range t.ConsumerGroups {
 			topic.FindConsumerGroup(groupName)
-			/* group := newConsumerGroup(groupName, topic.Name, topic.DeleteGroup)
-			group.notify = b.Notify
-			topic.csGroups[groupName] = group */
-			//s.Notify(group, !group.temporary)
 		}
-
 		topic.Start()
 	}
+	b.loading = false
 	log.Println("Broker State Intialized, ", metadata.Str())
 }
 
@@ -202,9 +189,13 @@ func (b *BrokerBase) GetMetadata(temp bool) StateMetadata {
 		if !topic.temporary || temp {
 			topic.rlock()
 			groups := make([]string, 0, len(topic.csGroups))
-			for groupName := range topic.csGroups {
-				groups = append(groups, groupName)
+
+			for groupName, g := range topic.csGroups {
+				if !g.temporary || temp {
+					groups = append(groups, groupName)
+				}
 			}
+
 			topic.runlock()
 			meta.Topics = append(meta.Topics, TopicMetadata{
 				TopicName:      topicName,
@@ -221,7 +212,8 @@ func getMetadataFileName(brokerID string) string {
 }
 
 func openFileMetadata(brokerID string) *os.File {
-	file, err := os.OpenFile(getMetadataFileName(brokerID), os.O_RDWR|os.O_CREATE, 0644)
+	filename := getMetadataFileName(brokerID)
+	file, err := os.OpenFile(filename, os.O_RDWR|os.O_CREATE, 0644)
 	if err != nil {
 		panic(err)
 	}
@@ -427,9 +419,14 @@ func scanWorker(groupChan <-chan *ConsumerGroup, stopChan <-chan struct{}, resul
 		case group := <-groupChan:
 			now := int(time.Now().UnixNano())
 			var positive bool
-			if group.ProcessInflightPQ(now) {
+			if group.ProcessInflightQueue(now) {
 				positive = true
 			}
+
+			if group.ProcessDelayQueue(now) {
+				positive = true
+			}
+
 			// TODO: process delayQueue
 			resultChan <- positive
 		case <-stopChan:

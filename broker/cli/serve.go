@@ -163,6 +163,12 @@ func (p ServeV1) route(ctx *handleContext, apiKey byte, payloadBuf []byte) ([]by
 
 		MayStartWriteLoop(ctx.client)
 		return OK, err
+	case c2b.KeyPublishMulti:
+		var payload c2b.PayloadPublishMulti
+		err := payload.DecodeV2(payloadBuf, bfpool.GetByteSlice)
+		if err != nil {
+			return nil, err
+		}
 
 	}
 	return nil, errors.New("not support request type")

@@ -39,6 +39,10 @@ var ErrBadMessage = errors.New("bad message")
 
 func (m *MockMessageHandler) Handle(msg *cli.Message) error {
 	atomic.AddInt64(&m.handledCount, 1)
+	if bytes.Equal(msg.Payload, []byte("b")) {
+		atomic.AddInt64(&m.failedCount, 1)
+		return ErrBadMessage
+	}
 	atomic.AddInt64(&m.succeedCount, 1)
 	return nil
 }
@@ -65,7 +69,7 @@ func RunConsumer() {
 		TraceID:      traceID,
 	}
 	csm := cli.NewConsumerDebug(topicName, groupName, msgHandler, &defaultConsumerConfig, traceID)
-	csm.SetMaxAttemp(1)
+	csm.SetMaxAttemp(3)
 
 	input := bufio.NewReader(os.Stdin)
 	wrongFormat := func() {
@@ -105,11 +109,26 @@ func RunConsumer() {
 
 		case bytes.Equal(arr[0], []byte("hstate")):
 			msgHandler.PrintState()
+
 		case bytes.Equal(arr[0], []byte("mem")):
 			var memstats runtime.MemStats
 			runtime.ReadMemStats(&memstats)
 			fmt.Println("AllocHeap:", memstats.HeapAlloc, "TotalAlloc:", memstats.TotalAlloc)
 			fmt.Println("NumGC:", memstats.NumGC)
+
+		case bytes.Equal(arr[0], []byte("batch-size")):
+			csm.PrintRespBatchSzStats()
+		case bytes.Equal(arr[0], []byte("conn-m")):
+			if len(arr) < 2 {
+				continue
+			}
+			addr := string(arr[1])
+			err := csm.ConnectMonitor(addr)
+			if err != nil {
+				fmt.Println("Failed to connect monitor,", err)
+			} else {
+				fmt.Println("Connect monitor successfully")
+			}
 		}
 	}
 }

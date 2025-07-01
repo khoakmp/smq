@@ -6,28 +6,28 @@ type Item struct {
 }
 
 type PriorityQueue struct {
-	data     []Item
+	items    []Item
 	cap, len int
 }
 
 func NewPriorityQueue() PriorityQueue {
 	return PriorityQueue{
-		data: make([]Item, 1),
-		cap:  1,
-		len:  0,
+		items: make([]Item, 1),
+		cap:   1,
+		len:   0,
 	}
 }
 
 func (q *PriorityQueue) swap(i, j int) {
-	temp := q.data[i]
-	q.data[i] = q.data[j]
-	q.data[j] = temp
+	temp := q.items[i]
+	q.items[i] = q.items[j]
+	q.items[j] = temp
 }
 
 func (q *PriorityQueue) up(idx int) {
 	for idx > 0 {
 		pid := (idx - 1) >> 1
-		if q.data[pid].prior <= q.data[idx].prior {
+		if q.items[pid].prior <= q.items[idx].prior {
 			return
 		}
 		q.swap(idx, pid)
@@ -39,12 +39,13 @@ func (q *PriorityQueue) Put(prior int, value any) {
 	if q.cap == q.len {
 		arr := make([]Item, q.cap*2)
 		q.cap += q.cap
-		q.data = arr
+		copy(arr, q.items)
+		q.items = arr
 	}
-	q.data[q.len].value = value
-	q.data[q.len].prior = prior
-	q.up(q.len)
+	q.items[q.len].value = value
+	q.items[q.len].prior = prior
 	q.len++
+	q.up(q.len - 1)
 }
 
 func (q *PriorityQueue) down(idx int) {
@@ -54,10 +55,10 @@ func (q *PriorityQueue) down(idx int) {
 			return
 		}
 		cidx := left
-		if right < q.len && q.data[right].prior < q.data[left].prior {
+		if right < q.len && q.items[right].prior < q.items[left].prior {
 			cidx = right
 		}
-		if q.data[idx].prior <= q.data[cidx].prior {
+		if q.items[idx].prior <= q.items[cidx].prior {
 			return
 		}
 		q.swap(idx, cidx)
@@ -73,26 +74,26 @@ func (q *PriorityQueue) IsEmpty() bool {
 	return q.len == 0
 }
 
-func (q *PriorityQueue) Peek() (int, any) {
+func (q *PriorityQueue) Peek() (priority int, item any) {
 	if q.len == 0 {
-		panic("empty queue")
+		return 0, nil
 	}
-	return q.data[0].prior, q.data[0].value
+	return q.items[0].prior, q.items[0].value
 }
 
 func (q *PriorityQueue) Pop() any {
 	if q.len == 0 {
-		panic("empty queue")
+		return nil
 	}
-	ans := q.data[0].value
-	q.data[0] = q.data[q.len-1]
+	ans := q.items[0].value
+	q.items[0] = q.items[q.len-1]
 	q.len--
 	q.down(0)
 	return ans
 }
 
 func (q *PriorityQueue) Empty() {
-	q.data = make([]Item, 1)
+	q.items = make([]Item, 1)
 	q.len = 0
 	q.cap = 1
 }
@@ -101,5 +102,5 @@ func (q *PriorityQueue) GetAt(index int) any {
 	if index < 0 || index >= q.len {
 		panic("out of range")
 	}
-	return q.data[index]
+	return q.items[index]
 }

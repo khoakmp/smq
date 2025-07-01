@@ -59,8 +59,6 @@ func MayStartWriteLoop(c *Client) {
 	}()
 }
 
-// at that time, it must keep large amount of message dung?
-
 var idCounter int64 = 0
 
 func genClientID() core.ClientID {

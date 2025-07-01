@@ -1,14 +1,12 @@
 package core
 
-import "fmt"
-
 type InflightPQ struct {
 	data     []*Message
 	len, cap int
 }
 
 func calcGrowthCap(cap int) int {
-	fmt.Println("InflighQueue grow to", cap<<1)
+	//fmt.Println("InflighQueue grow to", cap<<1)
 	c := min(100000, cap<<1)
 	return c
 }

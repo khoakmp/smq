@@ -162,3 +162,38 @@ func (p *PayloadPublishMulti) Encode() []byte {
 	}
 	return buffer.Bytes()
 }
+
+func (p *PayloadPublishMulti) Decode(buf []byte) error {
+	idx := bytes.IndexByte(buf, ' ')
+	if idx == -1 {
+		return ErrParseFailed
+	}
+	p.TopicName = string(buf[:idx])
+	offset := idx + 1
+	for offset < len(buf) {
+		var sz uint32 = binary.BigEndian.Uint32(buf[offset : offset+4])
+		offset += 4
+		p.Messages = append(p.Messages, buf[offset:offset+int(sz)])
+		offset += int(sz)
+	}
+	return nil
+}
+
+func (p *PayloadPublishMulti) DecodeV2(buf []byte, getByteSlice func(n uint32) []byte) error {
+	idx := bytes.IndexByte(buf, ' ')
+	if idx == -1 {
+		return ErrParseFailed
+	}
+	p.TopicName = string(buf[:idx])
+	offset := idx + 1
+
+	for offset < len(buf) {
+		var sz uint32 = binary.BigEndian.Uint32(buf[offset : offset+4])
+		offset += 4
+		msg := getByteSlice(sz)
+		copy(msg, buf[offset:offset+int(sz)])
+		p.Messages = append(p.Messages, msg)
+		offset += int(sz)
+	}
+	return nil
+}

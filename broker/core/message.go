@@ -17,6 +17,11 @@ const (
 
 type MessageID [MessageIDLength]byte
 
+func (m MessageID) Str() string {
+	id, _ := uuid.FromBytes(m[:])
+	return id.String()
+}
+
 // 1. test not make Message but do like this dung
 
 func MakeMessage(id MessageID, payload []byte) *Message {

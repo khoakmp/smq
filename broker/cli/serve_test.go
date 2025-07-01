@@ -169,7 +169,6 @@ func TestPublishMessage(t *testing.T) {
 		return
 	}
 
-	fmt.Println("hey")
 	buffer := bytes.NewBuffer(nil)
 	reader := bufio.NewReader(conn)
 
@@ -206,4 +205,21 @@ func TestPublishMessage(t *testing.T) {
 	assert.Equal(t, nil, err)
 	assert.Equal(t, api.FrameResponse, frameType)
 	assert.Equal(t, []byte("OK"), payload)
+}
+
+func TestPublisBatch(t *testing.T) {
+	state := core.NewBrokerBase("SMQB-0", nil, nil)
+
+	var msgPattern = []byte("kmp")
+	var messages [][]byte = make([][]byte, 3)
+
+	for i := range len(messages) {
+		messages[i] = make([]byte, 3)
+		copy(messages[i], msgPattern)
+	}
+
+	err := HandlePublishMulti(nil, state, "t1", messages)
+	assert.Equal(t, nil, err)
+	time.Sleep(time.Millisecond)
+	state.Close()
 }

@@ -48,7 +48,7 @@ func TestConsumerGroupTemporary(t *testing.T) {
 
 	t.Run("delayqueue", func(t *testing.T) {
 		msg := genMessage(MessageID(uuid.New()), 22, time.Second)
-		group.AddDelayMessage(msg)
+		group.PutDelayMessage(msg)
 		gotMsg := group.delayQueue.Pop().(*Message)
 		assert.Equal(t, msg, gotMsg)
 		assert.Equal(t, 0, group.delayQueue.Len())
@@ -56,7 +56,7 @@ func TestConsumerGroupTemporary(t *testing.T) {
 
 	t.Run("delete", func(t *testing.T) {
 		msg := genMessage(MessageID(uuid.New()), 22, 0)
-		group.AddDelayMessage(msg)
+		group.PutDelayMessage(msg)
 		msg = genMessage(MessageID(uuid.New()), 12, 0)
 		group.PutMessage(msg)
 
@@ -71,7 +71,7 @@ func TestConsumerGroupTemporary(t *testing.T) {
 	t.Run("delete_concurent", func(t *testing.T) {
 		group := newConsumerGroup("group-2#tmp", "topic-1#tmp", nil)
 		msg := genMessage(MessageID(uuid.New()), 22, 0)
-		group.AddDelayMessage(msg)
+		group.PutDelayMessage(msg)
 		var successCnt int32 = 0
 		var wg sync.WaitGroup
 		n := 5

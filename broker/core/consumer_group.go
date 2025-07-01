@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/khoakmp/smq/broker/fqueue"
 	"github.com/khoakmp/smq/broker/pkg/pq"
 )
 
@@ -80,11 +81,14 @@ func newConsumerGroup(name, topicName string, deleteCb func(groupName string) er
 		notify:           defaultNotify,
 		Measurer:         NewMeasurer(),
 	}
-	if cg.temporary {
+
+	if cg.temporary || !opts.EnableFileQueue {
 		cg.peristentQueue = &MockPersistentQueue{}
 	} else {
-		// TODO: replace by diskqueue
-		cg.peristentQueue = &MockPersistentQueue{}
+		cg.peristentQueue = fqueue.NewFileQueue(opts.FileQueueDir, cg.Name, fqueue.FileQueueConfig{
+			MaxBytesPerFile: 65536,
+			SyncEveryStep:   5,
+		})
 	}
 	return cg
 }
@@ -137,7 +141,6 @@ func (cg *ConsumerGroup) AddMember(c ConsumerGroupMember) error {
 		cg.Unlock()
 		return ErrConsumerGroupExisted
 	}
-	log.Printf("Client %d join group %s\n", c.ID(), cg.Name)
 	cg.members[c.ID()] = c
 	cg.Unlock()
 	return nil
@@ -198,12 +201,7 @@ func (c *ConsumerGroup) shutdown(delete bool) error {
 		member.Close()
 	}
 	c.RUnlock()
-	/* if c.notify == nil {
-		fmt.Println("c.notify is nil")
-	} */
-	//fmt.Println("before notify")
 	c.notify(c, !c.temporary)
-	//fmt.Println("after notify")
 	if delete {
 		c.EmptyMessages(false)
 		return c.peristentQueue.Delete()
@@ -277,25 +275,31 @@ func (c *ConsumerGroup) PutMessage(msg *Message) error {
 }
 
 func (c *ConsumerGroup) put(msg *Message) error {
-	select {
-	case c.messageChan <- msg:
-	default:
-		c.Measurer.IncrWritePQueueGroup()
-		buffer := bytes.NewBuffer(nil)
-		msg.WriteTo(buffer)
-		buf := buffer.Bytes()
 
-		if err := c.peristentQueue.Put(buf); err != nil {
-			//log.Printf("[ConsumerGroup %s] Failed to persist message, caused by %s\n", c.Name, err.Error())
-			return err
+	if c.temporary || opts.EnableFileQueue {
+		select {
+		case c.messageChan <- msg:
+		default:
+			c.Measurer.IncrWritePQueueGroup()
+			buffer := bytes.NewBuffer(nil)
+			msg.WriteTo(buffer)
+			buf := buffer.Bytes()
+
+			if err := c.peristentQueue.Put(buf); err != nil {
+				//log.Printf("[ConsumerGroup %s] Failed to persist message, caused by %s\n", c.Name, err.Error())
+				return err
+			}
 		}
+	} else {
+		c.messageChan <- msg
 	}
+
 	// when go here, message is successfully put to queue
 	atomic.AddInt64(&c.ReadyMsgCount, 1)
 	return nil
 }
 
-func (c *ConsumerGroup) AddDelayMessage(msg *Message) {
+func (c *ConsumerGroup) PutDelayMessage(msg *Message) {
 	c.exitLock.RLock()
 	defer c.exitLock.RUnlock()
 	if atomic.LoadInt32(&c.exiting) == 1 {
@@ -303,6 +307,10 @@ func (c *ConsumerGroup) AddDelayMessage(msg *Message) {
 	}
 	// When adding delay message, it ensures that group is active, not exiting
 	// so the delayqueue is active and can be put message
+	c.putDelay(msg)
+}
+
+func (c *ConsumerGroup) putDelay(msg *Message) {
 	c.delayLock.Lock()
 	c.delayQueue.Put(msg.Timestamp, msg)
 	c.delayLock.Unlock()
@@ -312,14 +320,6 @@ func (c *ConsumerGroup) StartInflight(msg *Message, clientID ClientID, timeout t
 	//TODO: check exitlock, consider later
 	msg.Priority = int(time.Now().Add(timeout).UnixNano())
 	msg.ConsumerID = clientID
-
-	/* c.inflightLock.Lock()
-	c.inflightPQ.Put(msg)
-	c.inflightMessages[msg.ID] = msg
-	c.inflightLock.Unlock()
-
-	atomic.AddInt64(&c.InflightMsgCount, 1)
-	atomic.AddInt64(&c.ReadyMsgCount, -1) */
 	c.putMessageInflightPQ(msg)
 }
 
@@ -327,9 +327,9 @@ func (c *ConsumerGroup) putMessageInflightPQ(msg *Message) {
 	c.inflightLock.Lock()
 	c.inflightPQ.Put(msg)
 	c.inflightMessages[msg.ID] = msg
-	atomic.AddInt64(&c.InflightMsgCount, 1)
 	c.inflightLock.Unlock()
 
+	atomic.AddInt64(&c.InflightMsgCount, 1)
 	atomic.AddInt64(&c.ReadyMsgCount, -1)
 }
 
@@ -359,6 +359,11 @@ func (c *ConsumerGroup) FinishMessage(msgID MessageID, clientID ClientID) error 
 	return nil
 }
 
+func calcRetryTimeout(tries int) time.Duration {
+	n := min(tries, 5)
+	return (1 << (n - 1)) * time.Second
+}
+
 func (c *ConsumerGroup) RequeueMessage(msgID MessageID, clientID ClientID) error {
 	// TODO: check exitlock
 	c.inflightLock.Lock()
@@ -375,8 +380,13 @@ func (c *ConsumerGroup) RequeueMessage(msgID MessageID, clientID ClientID) error
 	delete(c.inflightMessages, msgID)
 	c.inflightLock.Unlock()
 	atomic.AddInt64(&c.InflightMsgCount, -1)
+	msg.Attemps++
 
-	return c.put(msg)
+	timeout := calcRetryTimeout(int(msg.Attemps))
+	msg.Timestamp = int(time.Now().Add(timeout).UnixNano())
+	//fmt.Printf("Message[%s] will be tried after %s\n", msgID.Str(), timeout)
+	c.putDelay(msg)
+	return nil
 }
 
 // debug purpose
@@ -385,7 +395,7 @@ func (c *ConsumerGroup) InflightCount() int {
 	return c.inflightPQ.Len()
 }
 
-func (c *ConsumerGroup) ProcessInflightPQ(ts int) (positive bool) {
+func (c *ConsumerGroup) ProcessInflightQueue(ts int) (positive bool) {
 	c.exitLock.RLock()
 	defer c.exitLock.RUnlock()
 
@@ -415,4 +425,26 @@ func (c *ConsumerGroup) ProcessInflightPQ(ts int) (positive bool) {
 	}
 }
 
-// TODO: add process delay queue + test
+func (c *ConsumerGroup) ProcessDelayQueue(now int) (positive bool) {
+	c.exitLock.RLock()
+	defer c.exitLock.RUnlock()
+	if c.Exiting() {
+		return
+	}
+	for {
+		c.delayLock.Lock()
+		ts, msg := c.delayQueue.Peek()
+		if msg == nil || ts > now {
+			c.delayLock.Unlock()
+			return
+		}
+		// msg != nil && ts <= now
+		c.delayQueue.Pop()
+		c.delayLock.Unlock()
+		positive = true
+		msg1 := msg.(*Message)
+		msg1.ConsumerID = -1
+		fmt.Printf("Message[%s] is removed from delay queue, ready to send\n", msg1.ID.Str())
+		c.put(msg1)
+	}
+}

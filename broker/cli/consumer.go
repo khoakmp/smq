@@ -48,8 +48,6 @@ func (c *Consumer) MessageResponse() {
 // this function is called in only one goroutine
 func (c *Consumer) IsReady() bool {
 	if atomic.LoadInt32(&c.InflightMsgCount) >= atomic.LoadInt32(&c.ReadyCount) || c.group.Pausing() {
-		// TODO: replace ClientID by TraceID sent by client
-		//fmt.Printf("Client %s is not ready to recv msg\n", c.TraceID)
 		return false
 	}
 	return true
@@ -58,8 +56,6 @@ func (c *Consumer) IsReady() bool {
 func HandleACK(consumer *Consumer, msgID core.MessageID) error {
 	consumer.MessageResponse()
 	consumer.group.FinishMessage(msgID, consumer.ClientID)
-
-	//fmt.Printf("[Client %s] recv finish msg\n", consumer.Str())
 	return nil
 }
 
@@ -100,7 +96,6 @@ func pushMessagesLoop(s Server, consumer *Consumer) {
 
 	for {
 		if !consumer.IsReady() {
-			// when group != nil => client.group !=nil => client.ReadyRecvMsg valid
 			messageChan = nil
 			persistentChan = nil
 			flushChan = nil

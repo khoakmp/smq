@@ -10,6 +10,8 @@ type Options struct {
 	ScanQueueInterval            time.Duration
 	SampleGroupsCount            int
 	BroadcastTCPPort             uint16
+	EnableFileQueue              bool
+	FileQueueDir                 string
 }
 
 var opts Options
@@ -22,4 +24,6 @@ func init() {
 	opts.ScanQueueRecalWorkerInterval = time.Second * 2
 	opts.ScanQueueInterval = time.Second
 	opts.SampleGroupsCount = 10
+	opts.EnableFileQueue = true
+	opts.FileQueueDir = "data"
 }

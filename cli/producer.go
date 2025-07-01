@@ -182,11 +182,11 @@ func NewProducer(addr string) *Producer {
 		conn:            nil,
 		connClosedChan:  make(chan struct{}, 1),
 		exitChan:        make(chan struct{}),
-		transactionChan: make(chan *ProducerTransaction, 200),
+		transactionChan: make(chan *ProducerTransaction),
 		transQueue:      newTransactionQueue(),
 		state:           StateInit,
-		errChan:         make(chan []byte, 200),
-		respChan:        make(chan []byte, 200),
+		errChan:         make(chan []byte),
+		respChan:        make(chan []byte),
 		flushChan:       make(chan struct{}),
 		TraceID:         traceID,
 		Measurer:        &ProducerMeasure{},
@@ -203,9 +203,8 @@ func (p *Producer) Flush() {
 	}
 }
 
-// take 7 bytes for each message publish response dung?
-// at this point, it also send message in batch dung la dang do dng
-// van de ro rang la send message in batch
+// take 7 bytes for each message publish response
+// at this point, it also send message in batch
 func (p *Producer) sendTx(tx *ProducerTransaction) error {
 	select {
 	case p.transactionChan <- tx:
@@ -258,7 +257,7 @@ func (p *Producer) popTransaction() (tx *ProducerTransaction) {
 func (p *Producer) connect() error {
 	connDeletage := ProducerConnDelegate{p: p}
 	// TODO: change flushInterval
-	conn := NewConn(p.addr, connDeletage, 0)
+	conn := NewConn(p.addr, connDeletage, time.Millisecond*100)
 
 	// TOOD: change write buffer size
 	err := conn.Connect(1024, 4096, c2b.PayloadClientSpec{
@@ -283,7 +282,7 @@ var ErrConnDisconnected = errors.New("conn is disconnected")
 func (p *Producer) routeLoop() {
 	defer p.wg.Done()
 
-	handleNewTx := func(tx *ProducerTransaction) error {
+	/* handleNewTx := func(tx *ProducerTransaction) error {
 		err := p.conn.BufferCommand(tx.cmd)
 		if err != nil {
 			atomic.AddInt64(&p.TxNotSendCount, 1)
@@ -295,7 +294,7 @@ func (p *Producer) routeLoop() {
 
 		p.pushTransaction(tx)
 		return nil
-	}
+	} */
 
 	for {
 		select {
@@ -308,22 +307,22 @@ func (p *Producer) routeLoop() {
 				}
 			}
 
-			if err := handleNewTx(tx); err != nil {
-				continue
-			}
-		loop:
-			for {
-				select {
-				case tx := <-p.transactionChan:
-					if err := handleNewTx(tx); err != nil {
-						//break loop
-					}
-				default:
-					p.conn.Flush()
-					break loop
+			/* if err := handleNewTx(tx); err != nil {
+					continue
 				}
-			}
-			/* if err := p.conn.BufferCommand(tx.cmd); err != nil {
+			loop:
+				for {
+					select {
+					case tx := <-p.transactionChan:
+						if err := handleNewTx(tx); err != nil {
+							//break loop
+						}
+					default:
+						p.conn.Flush()
+						break loop
+					}
+				} */
+			if err := p.conn.BufferCommand(tx.cmd); err != nil {
 				atomic.AddInt64(&p.TxNotSendCount, 1)
 				tx.fail(ErrConnDisconnected)
 				continue
@@ -334,7 +333,7 @@ func (p *Producer) routeLoop() {
 			atomic.AddInt64(&p.TxSendCount, 1)
 			p.Measurer.RecordFirstTx()
 
-			p.pushTransaction(tx) */
+			p.pushTransaction(tx)
 		case <-p.flushChan:
 			p.conn.Flush()
 
@@ -446,12 +445,3 @@ func (d ProducerConnDelegate) OnResponse(resp []byte, c *Conn) {
 	d.p.respChan <- resp
 }
 func (d ProducerConnDelegate) OnHeartbeat(c *Conn) {}
-
-/*
-OnMessage(msg *Message)
-OnResponse(resp []byte, c *Conn)
-OnError(err []byte, c *Conn)
-OnHeartbeat(c *Conn)
-OnConnClose(c *Conn)
-OnIOError(err error, c *Conn)
-*/
